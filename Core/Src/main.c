@@ -435,11 +435,29 @@ static void MX_GPIO_Init(void)
 void EXTI0_IRQHandler(void){
 
 	// TODO: Debounce using HAL_GetTick()
-
+  static uint32_t last_press = 0;
+  uint32_t current_time = HAL_GetTick();
+  if (current_time - last_press < 200) return; // 200ms debounce
+  last_press = current_time;
 
 	// TODO: Disable DMA transfer and abort IT, then start DMA in IT mode with new LUT and re-enable transfer
 	// HINT: Consider using C's "switch" function to handle LUT changes
-
+  static uint8_t current_waveform = 0;
+  
+  HAL_DMA_Abort_IT(&hdma_tim2_ch1);
+  
+  switch(current_waveform) {
+      case 0: 
+          HAL_DMA_Start_IT(&hdma_tim2_ch1, (uint32_t)Saw_LUT, DestAddress, NS);
+          lcd_display_string("Sawtooth");
+          break;
+      case 1:
+          HAL_DMA_Start_IT(&hdma_tim2_ch1, (uint32_t)Triangle_LUT, DestAddress, NS);
+          lcd_display_string("Triangle");
+          break;
+  }
+  
+  current_waveform = (current_waveform + 1) % 6; // Cycle through 6 waveforms
 
 
 
