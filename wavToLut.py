@@ -3,14 +3,14 @@ import matplotlib.pyplot as plt
 from scipy.io import wavfile
 from scipy import signal
 
-def wav_to_lut(filename, num_samples=128, target_freq=440):
+def wav_to_lut(filename, num_samples=128, duration_ms=50):
     """
     Convert a .wav file to a lookup table for embedded systems.
     
     Parameters:
     - filename: path to .wav file
     - num_samples: number of samples in LUT (default 128)
-    - target_freq: target frequency in Hz (default 440 Hz - A4 note)
+    - duration_ms: duration in milliseconds to extract from audio (default 50ms)
     
     Returns:
     - lut: numpy array of 12-bit values (0-4095)
@@ -22,6 +22,7 @@ def wav_to_lut(filename, num_samples=128, target_freq=440):
     print(f"Sample rate: {sample_rate} Hz")
     print(f"Audio shape: {audio_data.shape}")
     print(f"Data type: {audio_data.dtype}")
+    print(f"Duration: {len(audio_data)/sample_rate:.2f} seconds")
     
     # Convert stereo to mono if needed
     if len(audio_data.shape) > 1:
@@ -30,33 +31,59 @@ def wav_to_lut(filename, num_samples=128, target_freq=440):
     
     # Normalize to [-1, 1] range
     if audio_data.dtype == np.int16:
-        audio_data = audio_data / 32768.0
+        audio_data = audio_data.astype(np.float32) / 32768.0
     elif audio_data.dtype == np.int32:
-        audio_data = audio_data / 2147483648.0
+        audio_data = audio_data.astype(np.float32) / 2147483648.0
     elif audio_data.dtype == np.uint8:
-        audio_data = (audio_data - 128) / 128.0
-    
-    # Extract one period at target frequency
-    samples_per_period = int(sample_rate / target_freq)
-    
-    # Use first period or resample entire audio
-    if len(audio_data) >= samples_per_period:
-        one_period = audio_data[:samples_per_period]
+        audio_data = (audio_data.astype(np.float32) - 128) / 128.0
     else:
-        one_period = audio_data
+        audio_data = audio_data.astype(np.float32)
+    
+    print(f"Audio range after normalization: [{np.min(audio_data):.3f}, {np.max(audio_data):.3f}]")
+    
+    # Extract a portion of the audio (find the loudest section)
+    samples_to_extract = int(sample_rate * duration_ms / 1000)
+    
+    # Find the section with highest RMS energy
+    window_size = samples_to_extract
+    if len(audio_data) > window_size:
+        # Calculate RMS for sliding windows
+        num_windows = len(audio_data) - window_size
+        rms_values = np.array([np.sqrt(np.mean(audio_data[i:i+window_size]**2)) 
+                               for i in range(0, num_windows, window_size//10)])
+        
+        # Find window with maximum energy
+        best_window_idx = np.argmax(rms_values) * (window_size//10)
+        audio_segment = audio_data[best_window_idx:best_window_idx + window_size]
+        print(f"Extracted segment from sample {best_window_idx} (highest energy region)")
+    else:
+        audio_segment = audio_data
+        print(f"Using entire audio file ({len(audio_segment)} samples)")
     
     # Resample to desired number of samples
-    lut_float = signal.resample(one_period, num_samples)
+    lut_float = signal.resample(audio_segment, num_samples)
+    
+    print(f"Resampled range: [{np.min(lut_float):.3f}, {np.max(lut_float):.3f}]")
+    
+    # Check if signal is too quiet
+    if np.max(np.abs(lut_float)) < 0.01:
+        print("WARNING: Signal is very quiet, may need amplification")
     
     # Normalize to ensure full range usage
-    lut_float = lut_float - np.min(lut_float)  # Shift to positive
-    lut_float = lut_float / np.max(lut_float)  # Normalize to [0, 1]
+    if np.max(lut_float) != np.min(lut_float):
+        lut_float = lut_float - np.min(lut_float)  # Shift to positive
+        lut_float = lut_float / np.max(lut_float)  # Normalize to [0, 1]
+    else:
+        print("ERROR: No variation in signal - all samples are the same!")
+        lut_float = np.zeros(num_samples)
     
     # Scale to 12-bit range (0-4095)
     lut = np.round(lut_float * 4095).astype(np.uint16)
     
     # Ensure values are within range
     lut = np.clip(lut, 0, 4095)
+    
+    print(f"Final LUT range: [{np.min(lut)}, {np.max(lut)}]")
     
     return lut, sample_rate
 
@@ -196,9 +223,9 @@ def generate_test_waveforms(num_samples=128):
     drum = ((drum - np.min(drum)) / (np.max(drum) - np.min(drum)) * 4095).astype(np.uint16)
     
     # Export and plot
-    export_to_c_array(piano, 'Piano_LUT', 'pluts.txt')
-    export_to_c_array(guitar, 'Guitar_LUT', 'gluts.txt')
-    export_to_c_array(drum, 'Drum_LUT', 'dluts.txt')
+    export_to_c_array(piano, 'Piano_LUT', 'luts.txt')
+    export_to_c_array(guitar, 'Guitar_LUT', 'luts.txt')
+    export_to_c_array(drum, 'Drum_LUT', 'luts.txt')
     
     plot_waveforms([piano, guitar, drum], ['Piano', 'Guitar', 'Drum'])
     
