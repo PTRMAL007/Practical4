@@ -1,244 +1,249 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.io import wavfile
-from scipy import signal
+import os
 
-def wav_to_lut(filename, num_samples=128, duration_ms=50):
+def generate_lut_from_wav(wav_file, num_samples=128, output_name=None):
     """
-    Convert a .wav file to a lookup table for embedded systems.
+    Generate a lookup table from a .wav file for STM32 DAC
     
     Parameters:
-    - filename: path to .wav file
-    - num_samples: number of samples in LUT (default 128)
-    - duration_ms: duration in milliseconds to extract from audio (default 50ms)
+    - wav_file: path to the .wav file
+    - num_samples: number of samples in the LUT (minimum 128)
+    - output_name: name for the output (defaults to filename without extension)
     
     Returns:
-    - lut: numpy array of 12-bit values (0-4095)
+    - lut: numpy array with values scaled to 0-4095 (12-bit)
     """
     
     # Read the WAV file
-    sample_rate, audio_data = wavfile.read(filename)
-    print(f"File: {filename}")
-    print(f"Sample rate: {sample_rate} Hz")
-    print(f"Audio shape: {audio_data.shape}")
-    print(f"Data type: {audio_data.dtype}")
-    print(f"Duration: {len(audio_data)/sample_rate:.2f} seconds")
+    sample_rate, audio_data = wavfile.read(wav_file)
     
-    # Convert stereo to mono if needed
+    print(f"  Original dtype: {audio_data.dtype}")
+    print(f"  Original shape: {audio_data.shape}")
+    print(f"  Sample rate: {sample_rate} Hz")
+    
+    # If stereo, convert to mono by averaging channels
     if len(audio_data.shape) > 1:
         audio_data = np.mean(audio_data, axis=1)
-        print("Converted stereo to mono")
+        print(f"  Converted to mono")
     
-    # Normalize to [-1, 1] range
+    # Convert to float and normalize properly based on dtype
     if audio_data.dtype == np.int16:
-        audio_data = audio_data.astype(np.float32) / 32768.0
+        # int16 ranges from -32768 to 32767
+        audio_data = audio_data.astype(np.float64) / 32768.0
     elif audio_data.dtype == np.int32:
-        audio_data = audio_data.astype(np.float32) / 2147483648.0
+        # int32 ranges from -2147483648 to 2147483647
+        audio_data = audio_data.astype(np.float64) / 2147483648.0
     elif audio_data.dtype == np.uint8:
-        audio_data = (audio_data.astype(np.float32) - 128) / 128.0
+        # uint8 ranges from 0 to 255, center is at 128
+        audio_data = (audio_data.astype(np.float64) - 128.0) / 128.0
+    elif audio_data.dtype == np.float32 or audio_data.dtype == np.float64:
+        # Already float, just ensure it's float64
+        audio_data = audio_data.astype(np.float64)
     else:
-        audio_data = audio_data.astype(np.float32)
+        print(f"  Warning: Unknown dtype {audio_data.dtype}, treating as float")
+        audio_data = audio_data.astype(np.float64)
     
-    print(f"Audio range after normalization: [{np.min(audio_data):.3f}, {np.max(audio_data):.3f}]")
+    print(f"  Audio range after normalization: [{np.min(audio_data):.4f}, {np.max(audio_data):.4f}]")
     
-    # Extract a portion of the audio (find the loudest section)
-    samples_to_extract = int(sample_rate * duration_ms / 1000)
-    
-    # Find the section with highest RMS energy
-    window_size = samples_to_extract
-    if len(audio_data) > window_size:
-        # Calculate RMS for sliding windows
-        num_windows = len(audio_data) - window_size
-        rms_values = np.array([np.sqrt(np.mean(audio_data[i:i+window_size]**2)) 
-                               for i in range(0, num_windows, window_size//10)])
-        
-        # Find window with maximum energy
-        best_window_idx = np.argmax(rms_values) * (window_size//10)
-        audio_segment = audio_data[best_window_idx:best_window_idx + window_size]
-        print(f"Extracted segment from sample {best_window_idx} (highest energy region)")
-    else:
-        audio_segment = audio_data
-        print(f"Using entire audio file ({len(audio_segment)} samples)")
+    # Find the actual peak value for proper scaling
+    peak = np.max(np.abs(audio_data))
+    if peak > 0:
+        # Normalize to use full range without clipping
+        audio_data = audio_data / peak
+        print(f"  Normalized by peak value: {peak:.4f}")
     
     # Resample to desired number of samples
-    lut_float = signal.resample(audio_segment, num_samples)
-    
-    print(f"Resampled range: [{np.min(lut_float):.3f}, {np.max(lut_float):.3f}]")
-    
-    # Check if signal is too quiet
-    if np.max(np.abs(lut_float)) < 0.01:
-        print("WARNING: Signal is very quiet, may need amplification")
-    
-    # Normalize to ensure full range usage
-    if np.max(lut_float) != np.min(lut_float):
-        lut_float = lut_float - np.min(lut_float)  # Shift to positive
-        lut_float = lut_float / np.max(lut_float)  # Normalize to [0, 1]
+    if len(audio_data) > num_samples:
+        # Downsample by selecting evenly spaced samples
+        indices = np.linspace(0, len(audio_data) - 1, num_samples, dtype=int)
+        resampled = audio_data[indices]
     else:
-        print("ERROR: No variation in signal - all samples are the same!")
-        lut_float = np.zeros(num_samples)
+        # Upsample using interpolation
+        x_old = np.linspace(0, 1, len(audio_data))
+        x_new = np.linspace(0, 1, num_samples)
+        resampled = np.interp(x_new, x_old, audio_data)
     
-    # Scale to 12-bit range (0-4095)
-    lut = np.round(lut_float * 4095).astype(np.uint16)
+    print(f"  Resampled range: [{np.min(resampled):.4f}, {np.max(resampled):.4f}]")
     
-    # Ensure values are within range
+    # Scale from [-1, 1] to [0, 4095] (12-bit DAC range)
+    # Add 1 to shift to [0, 2], then multiply by 2047.5 to get [0, 4095]
+    lut = ((resampled + 1.0) * 2047.5).astype(np.uint16)
+    
+    # Clip to ensure values are within range
     lut = np.clip(lut, 0, 4095)
     
-    print(f"Final LUT range: [{np.min(lut)}, {np.max(lut)}]")
+    print(f"  Final LUT range: [{np.min(lut)}, {np.max(lut)}]")
+    print(f"  Mean LUT value: {np.mean(lut):.1f} (should be near 2048)")
     
-    return lut, sample_rate
+    # Set output name
+    if output_name is None:
+        output_name = os.path.splitext(os.path.basename(wav_file))[0]
+    
+    return lut, resampled, sample_rate, output_name
 
-def plot_waveforms(luts, labels):
+
+def plot_waveform(lut, normalized_audio, sample_rate, output_name):
     """
-    Plot multiple waveforms for visualization.
-    
-    Parameters:
-    - luts: list of numpy arrays
-    - labels: list of labels for each waveform
+    Plot the waveform with both normalized audio and LUT values
     """
-    fig, axes = plt.subplots(len(luts), 1, figsize=(12, 3*len(luts)))
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
     
-    if len(luts) == 1:
-        axes = [axes]
+    # Plot normalized audio
+    time_axis = np.arange(len(normalized_audio))
+    ax1.plot(time_axis, normalized_audio, 'b-', linewidth=1.5)
+    ax1.axhline(y=0, color='k', linestyle='--', alpha=0.3)
+    ax1.set_xlabel('Sample Index')
+    ax1.set_ylabel('Normalized Amplitude')
+    ax1.set_title(f'{output_name} - Normalized Waveform (-1 to +1)')
+    ax1.grid(True, alpha=0.3)
+    ax1.set_ylim([-1.2, 1.2])
     
-    for i, (lut, label) in enumerate(zip(luts, labels)):
-        axes[i].plot(lut, linewidth=2, color='blue')
-        axes[i].set_title(f'{label} Waveform (LUT)', fontsize=14, fontweight='bold')
-        axes[i].set_xlabel('Sample Index')
-        axes[i].set_ylabel('12-bit Value (0-4095)')
-        axes[i].grid(True, alpha=0.3)
-        axes[i].set_ylim(-100, 4195)
-        
-        # Add statistics
-        stats_text = f'Min: {np.min(lut)}, Max: {np.max(lut)}, Mean: {np.mean(lut):.1f}'
-        axes[i].text(0.02, 0.98, stats_text, transform=axes[i].transAxes,
-                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    # Plot LUT values
+    sample_indices = np.arange(len(lut))
+    ax2.plot(sample_indices, lut, 'r-', linewidth=1.5, marker='o', markersize=3)
+    ax2.axhline(y=2048, color='k', linestyle='--', alpha=0.3, label='Center (2048)')
+    ax2.set_xlabel('Sample Index')
+    ax2.set_ylabel('DAC Value (12-bit)')
+    ax2.set_title(f'{output_name} - Lookup Table (0-4095)')
+    ax2.grid(True, alpha=0.3)
+    ax2.set_ylim([0, 4095])
+    ax2.legend()
     
     plt.tight_layout()
-    plt.savefig('waveform_luts.png', dpi=300, bbox_inches='tight')
-    print("\nPlot saved as 'waveform_luts.png'")
-    plt.show()
+    plt.savefig(f'{output_name}_waveform.png', dpi=150, bbox_inches='tight')
+    print(f"  Saved waveform plot: {output_name}_waveform.png")
+    plt.close()
 
-def export_to_c_array(lut, name, filename='luts.txt'):
+
+def format_lut_for_c(lut, var_name, values_per_line=12):
     """
-    Export LUT as C array format.
+    Format the LUT as C array code
+    """
+    c_code = f"// Lookup table for {var_name}\n"
+    c_code += f"// {len(lut)} samples, 12-bit resolution (0-4095)\n"
+    c_code += f"uint16_t {var_name}[{len(lut)}] = {{\n    "
+    
+    for i, value in enumerate(lut):
+        c_code += f"{value}"
+        if i < len(lut) - 1:
+            c_code += ", "
+            if (i + 1) % values_per_line == 0:
+                c_code += "\n    "
+    
+    c_code += "\n};\n"
+    return c_code
+
+
+def process_wav_files(wav_files, num_samples=128):
+    """
+    Process multiple WAV files and generate LUTs
     
     Parameters:
-    - lut: numpy array
-    - name: variable name for the array
-    - filename: output text file
+    - wav_files: list of paths to .wav files
+    - num_samples: number of samples in each LUT
     """
-    with open(filename, 'a') as f:
-        f.write(f"\n// {name} - {len(lut)} samples\n")
-        f.write(f"uint32_t {name}[{len(lut)}] = {{\n    ")
-        
-        for i, value in enumerate(lut):
-            f.write(f"{value}")
-            if i < len(lut) - 1:
-                f.write(", ")
-                if (i + 1) % 8 == 0:  # 8 values per line
-                    f.write("\n    ")
-        
-        f.write("\n};\n")
     
-    print(f"Exported {name} to {filename}")
+    all_c_code = "// ===== Generated Lookup Tables from WAV Files =====\n"
+    all_c_code += f"// Sample rate: 44.1 kHz (original WAV files)\n"
+    all_c_code += f"// LUT size: {num_samples} samples\n"
+    all_c_code += f"// Resolution: 12-bit (0-4095)\n"
+    all_c_code += f"// Center value: 2048 (represents 0V offset)\n\n"
+    
+    lut_info = []
+    
+    for wav_file in wav_files:
+        if not os.path.exists(wav_file):
+            print(f"Warning: File not found - {wav_file}")
+            continue
+        
+        print(f"\nProcessing: {wav_file}")
+        
+        # Generate LUT
+        lut, normalized_audio, sample_rate, output_name = generate_lut_from_wav(
+            wav_file, num_samples
+        )
+        
+        # Create a clean variable name
+        var_name = output_name.replace('-', '_').replace(' ', '_').replace('.', '_')
+        var_name = f"LUT_{var_name}"
+        
+        # Plot waveform
+        plot_waveform(lut, normalized_audio, sample_rate, output_name)
+        
+        # Generate C code
+        c_code = format_lut_for_c(lut, var_name)
+        all_c_code += c_code + "\n"
+        
+        # Store info
+        lut_info.append({
+            'name': var_name,
+            'file': wav_file,
+            'samples': len(lut),
+            'min': np.min(lut),
+            'max': np.max(lut),
+            'mean': np.mean(lut),
+            'std': np.std(lut)
+        })
+        
+        print(f"  Variable name: {var_name}")
+        print(f"  Value range: {np.min(lut)} - {np.max(lut)}")
+        print(f"  Mean: {np.mean(lut):.1f}, Std Dev: {np.std(lut):.1f}")
+    
+    # Save all C code to file
+    with open('wav_lookup_tables.txt', 'w') as f:
+        f.write(all_c_code)
+    print(f"\n{'='*50}")
+    print(f"Saved C code to: wav_lookup_tables.txt")
+    
+    # Print summary
+    print("\n===== Summary =====")
+    print(f"Processed {len(lut_info)} WAV files")
+    print(f"LUT size: {num_samples} samples each")
+    print("\nQuality Check:")
+    for info in lut_info:
+        center_offset = abs(info['mean'] - 2048)
+        quality = "GOOD" if center_offset < 100 and info['std'] > 100 else "CHECK"
+        print(f"  {info['name']}: {quality}")
+        print(f"    Mean: {info['mean']:.1f} (offset from 2048: {center_offset:.1f})")
+        print(f"    Range: {info['min']} to {info['max']}")
+        print(f"    Dynamic range: {info['std']:.1f}")
+    
+    print("\nVariable names to use in main.c:")
+    for info in lut_info:
+        print(f"  - {info['name']}")
+    
+    return lut_info
 
-def main():
-    """
-    Main function to process audio files and generate LUTs.
-    """
-    # Clear the output file
-    open('luts.txt', 'w').close()
-    
-    # Configuration
-    num_samples = 128  # Number of samples in LUT
-    target_freq = 440  # Target frequency in Hz
-    
-    # List of audio files to process
-    # Replace these with your actual .wav file paths
-    audio_files = [
-        ('piano.wav', 'Piano_LUT'),
-        ('guitar.wav', 'Guitar_LUT'),
-        ('drum.wav', 'Drum_LUT')
+
+# ===== MAIN EXECUTION =====
+if __name__ == "__main__":
+    # Replace these with your actual WAV file paths
+    wav_files = [
+        'piano.wav',
+        'guitar.wav', 
+        'drum.wav'
     ]
     
-    luts = []
-    labels = []
+    # You can adjust the number of samples if needed (minimum 128)
+    NUM_SAMPLES = 3000
     
-    print("=" * 60)
-    print("WAV to LUT Converter for STM32")
-    print("=" * 60)
+    print("="*50)
+    print("WAV to LUT Generator for STM32")
+    print("="*50)
+    print(f"Target: {NUM_SAMPLES} samples per LUT")
+    print(f"Resolution: 12-bit (0-4095)")
+    print(f"Expected sample rate: 44.1 kHz\n")
     
-    for filename, var_name in audio_files:
-        try:
-            print(f"\nProcessing {filename}...")
-            lut, sample_rate = wav_to_lut(filename, num_samples, target_freq)
-            
-            # Store for plotting
-            luts.append(lut)
-            labels.append(var_name.replace('_LUT', ''))
-            
-            # Export to C format
-            export_to_c_array(lut, var_name, 'luts.txt')
-            
-            print(f"✓ Successfully processed {filename}")
-            print(f"  LUT size: {len(lut)} samples")
-            print(f"  Value range: {np.min(lut)} to {np.max(lut)}")
-            
-        except FileNotFoundError:
-            print(f"✗ Error: File '{filename}' not found!")
-        except Exception as e:
-            print(f"✗ Error processing {filename}: {str(e)}")
+    # Process all WAV files
+    lut_info = process_wav_files(wav_files, NUM_SAMPLES)
     
-    # Plot all waveforms
-    if luts:
-        print("\nGenerating plots...")
-        plot_waveforms(luts, labels)
-        print("\n" + "=" * 60)
-        print(f"All LUTs exported to 'luts.txt'")
-        print("Copy the arrays from luts.txt into your main.c file")
-        print("=" * 60)
-    else:
-        print("\nNo files were successfully processed.")
-
-# Alternative: Generate test waveforms if you don't have audio files
-def generate_test_waveforms(num_samples=128):
-    """
-    Generate synthetic instrument-like waveforms for testing.
-    """
-    open('luts.txt', 'w').close()
-    
-    t = np.linspace(0, 2*np.pi, num_samples, endpoint=False)
-    
-    # Piano-like: Fundamental + harmonics with exponential decay
-    piano = np.sin(t) + 0.5*np.sin(2*t) + 0.25*np.sin(3*t)
-    piano = piano * np.exp(-t/2)  # Decay envelope
-    piano = ((piano - np.min(piano)) / (np.max(piano) - np.min(piano)) * 4095).astype(np.uint16)
-    
-    # Guitar-like: Fundamental + odd harmonics
-    guitar = np.sin(t) + 0.3*np.sin(3*t) + 0.1*np.sin(5*t)
-    guitar = ((guitar - np.min(guitar)) / (np.max(guitar) - np.min(guitar)) * 4095).astype(np.uint16)
-    
-    # Drum-like: Noise with exponential decay
-    drum = np.random.randn(num_samples) * np.exp(-np.linspace(0, 5, num_samples))
-    drum = ((drum - np.min(drum)) / (np.max(drum) - np.min(drum)) * 4095).astype(np.uint16)
-    
-    # Export and plot
-    export_to_c_array(piano, 'Piano_LUT', 'luts.txt')
-    export_to_c_array(guitar, 'Guitar_LUT', 'luts.txt')
-    export_to_c_array(drum, 'Drum_LUT', 'luts.txt')
-    
-    plot_waveforms([piano, guitar, drum], ['Piano', 'Guitar', 'Drum'])
-    
-    print("\nTest waveforms generated successfully!")
-    print("Check 'luts.txt' for the C arrays")
-
-if __name__ == "__main__":
-    # Choose one of the following:
-    
-    # Option 1: Process actual .wav files
-    main()
-    
-    # Option 2: Generate synthetic test waveforms
-    # generate_test_waveforms()
-    
-    print("\nDone!")
+    print("\n" + "=" * 50)
+    print("Processing complete!")
+    print("\nNext steps:")
+    print("1. Check the generated PNG files - waveforms should be centered")
+    print("2. Verify mean values are near 2048 (DC offset)")
+    print("3. Copy arrays from 'wav_lookup_tables.txt' into your main.c")
+    print("4. If waveforms still look wrong, the WAV files may be corrupted")
+    print("=" * 50)
