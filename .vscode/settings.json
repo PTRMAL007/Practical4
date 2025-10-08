@@ -1,5 +1,6 @@
 {
-    "stm32-for-vscode.openOCDPath": "c:\\Users\\Administrator\\AppData\\Roaming\\Code\\User\\globalStorage\\bmd.stm32-for-vscode\\@xpack-dev-tools\\openocd\\0.12.0-6.1\\.content\\bin\\openocd.EXE",
-    "cortex-debug.armToolchainPath": "C:\\ST\\STM32CubeCLT_1.18.0\\GNU-tools-for-STM32\\bin",
-    "cmake.sourceDirectory": "C:/Users/Administrator/OneDrive - University of Cape Town/Desktop/4th Year/EEE3095S/Practical4/Drivers/CMSIS/NN"
+    "stm32-for-vscode.openOCDPath": "c:\\Users\\yaqee\\AppData\\Roaming\\Code\\User\\globalStorage\\bmd.stm32-for-vscode\\@xpack-dev-tools\\openocd\\0.12.0-6.1\\.content\\bin\\openocd.EXE",
+    "cortex-debug.armToolchainPath": "c:\\Users\\yaqee\\AppData\\Roaming\\Code\\User\\globalStorage\\bmd.stm32-for-vscode\\@xpack-dev-tools\\arm-none-eabi-gcc\\14.2.1-1.1.1\\.content\\bin",
+    "cmake.sourceDirectory": "C:/Users/Administrator/OneDrive - University of Cape Town/Desktop/4th Year/EEE3095S/Practical4/Drivers/CMSIS/NN",
+    "cortex-debug.openocdPath": "c:\\Users\\yaqee\\AppData\\Roaming\\Code\\User\\globalStorage\\bmd.stm32-for-vscode\\@xpack-dev-tools\\openocd\\0.12.0-6.1\\.content\\bin\\openocd.EXE"
 }
